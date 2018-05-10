@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"log"
 
+	"os"
+	"os/signal"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/kinesis"
@@ -19,31 +22,61 @@ func main() {
 	flag.Parse()
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
-
-	s := session.New(&aws.Config{Region: aws.String(*region)})
+	awsConfig := &aws.Config{Region: aws.String(*region)}
+	log.Println("region", *awsConfig.Region)
+	s, err := session.NewSession(awsConfig)
+	if err != nil {
+		log.Println(err)
+		return
+	}
 	kc := kinesis.New(s)
 
 	streamName := aws.String(*stream)
 
-	log.Println("streamName", *streamName)
-
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+	delete := func() {
+		deleteParams := kinesis.DeleteStreamInput{
+			StreamName: streamName,
+		}
+		log.Printf("deleting the stream %+v\n", deleteParams)
+		// OK, finally delete your stream
+		deleteOutput, err := kc.DeleteStream(&deleteParams)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		log.Printf("deleteOutput: %v\n", deleteOutput)
+	}
+	go func() {
+		for sig := range c {
+			log.Println("exiting", sig)
+			delete()
+			os.Exit(1)
+		}
+	}()
+	log.Println("CreateStream", *streamName)
 	out, err := kc.CreateStream(&kinesis.CreateStreamInput{
 		ShardCount: aws.Int64(1),
 		StreamName: streamName,
 	})
 	if err != nil {
-		panic(err)
+		log.Println(err)
+		return
 	}
+	defer delete()
 	log.Printf("CreateStream output: %v\n", out)
 	log.Println("WaitUntilStreamExists")
 	if err := kc.WaitUntilStreamExists(&kinesis.DescribeStreamInput{StreamName: streamName}); err != nil {
-		panic(err)
+		log.Println(err)
+		return
 	}
 	describeStreamInput := kinesis.DescribeStreamInput{StreamName: streamName}
-	log.Println("describing stream %+v", describeStreamInput)
+	log.Println("describing stream", describeStreamInput)
 	streams, err := kc.DescribeStream(&describeStreamInput)
 	if err != nil {
-		panic(err)
+		log.Println(err)
+		return
 	}
 	log.Printf("%v\n", streams)
 	record := kinesis.PutRecordInput{
@@ -54,7 +87,8 @@ func main() {
 	log.Printf("putting record %+v\n", record)
 	putOutput, err := kc.PutRecord(&record)
 	if err != nil {
-		panic(err)
+		log.Println(err)
+		return
 	}
 	log.Printf("putOutput: %v\n", putOutput)
 
@@ -75,7 +109,8 @@ func main() {
 	log.Printf("records to put: %v\n", putRecordsInput)
 	putsOutput, err := kc.PutRecords(&putRecordsInput)
 	if err != nil {
-		panic(err)
+		log.Println(err)
+		return
 	}
 	// putsOutput has Records, and its shard id and sequece enumber.
 	log.Printf("putsOutput: %v\n", putsOutput)
@@ -88,40 +123,34 @@ func main() {
 		// ShardIteratorType: aws.String("LATEST"),
 		StreamName: streamName,
 	}
-	log.Println("iteratorInput %+v", iteratorInput)
+	log.Println("GetShardIterator input", iteratorInput)
 	// retrieve iterator
 	iteratorOutput, err := kc.GetShardIterator(&iteratorInput)
 	if err != nil {
-		panic(err)
+		log.Println(err)
+		return
 	}
 	log.Printf("iteratorOutput: %v\n", iteratorOutput)
-	log.Printf("getting records by iterator %+v", iteratorOutput.ShardIterator)
+	log.Printf("GetRecords by ShardIterator %+v", *iteratorOutput.ShardIterator)
 	// get records use shard iterator for making request
 	records, err := kc.GetRecords(&kinesis.GetRecordsInput{
 		ShardIterator: iteratorOutput.ShardIterator,
 	})
 	if err != nil {
-		panic(err)
+		log.Println(err)
+		return
 	}
 	log.Printf("records: %v\n", records)
 
 	// and, you can iteratively make GetRecords request using records.NextShardIterator
-	log.Printf("getting next records using records.NextShardIterator %+v", records.NextShardIterator)
+	log.Printf("getting next records using records.NextShardIterator %+v", *records.NextShardIterator)
 	recordsSecond, err := kc.GetRecords(&kinesis.GetRecordsInput{
 		ShardIterator: records.NextShardIterator,
 	})
 	if err != nil {
-		panic(err)
+		log.Println(err)
+		return
 	}
 	log.Printf("recordsSecond %v\n", recordsSecond)
-	deleteParams := kinesis.DeleteStreamInput{
-		StreamName: streamName,
-	}
-	log.Printf("deleting the stream %+v\n", deleteParams)
-	// OK, finally delete your stream
-	deleteOutput, err := kc.DeleteStream(&deleteParams)
-	if err != nil {
-		panic(err)
-	}
-	log.Printf("deleteOutput: %v\n", deleteOutput)
+
 }
