@@ -3,6 +3,8 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/kinesis"
@@ -10,16 +12,20 @@ import (
 
 var (
 	stream = flag.String("stream", "your-stream", "your stream name")
-	region = flag.String("region", "ap-northeast-1", "your AWS region")
+	region = flag.String("region", "eu-central-1", "your AWS region")
 )
 
 func main() {
 	flag.Parse()
 
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
 	s := session.New(&aws.Config{Region: aws.String(*region)})
 	kc := kinesis.New(s)
 
 	streamName := aws.String(*stream)
+
+	log.Println("streamName", *streamName)
 
 	out, err := kc.CreateStream(&kinesis.CreateStreamInput{
 		ShardCount: aws.Int64(1),
@@ -28,27 +34,29 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("%v\n", out)
-
+	log.Printf("CreateStream output: %v\n", out)
+	log.Println("WaitUntilStreamExists")
 	if err := kc.WaitUntilStreamExists(&kinesis.DescribeStreamInput{StreamName: streamName}); err != nil {
 		panic(err)
 	}
-
-	streams, err := kc.DescribeStream(&kinesis.DescribeStreamInput{StreamName: streamName})
+	describeStreamInput := kinesis.DescribeStreamInput{StreamName: streamName}
+	log.Println("describing stream %+v", describeStreamInput)
+	streams, err := kc.DescribeStream(&describeStreamInput)
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("%v\n", streams)
-
-	putOutput, err := kc.PutRecord(&kinesis.PutRecordInput{
+	log.Printf("%v\n", streams)
+	record := kinesis.PutRecordInput{
 		Data:         []byte("hoge"),
 		StreamName:   streamName,
 		PartitionKey: aws.String("key1"),
-	})
+	}
+	log.Printf("putting record %+v\n", record)
+	putOutput, err := kc.PutRecord(&record)
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("%v\n", putOutput)
+	log.Printf("putOutput: %v\n", putOutput)
 
 	// put 10 records using PutRecords API
 	entries := make([]*kinesis.PutRecordsRequestEntry, 10)
@@ -58,31 +66,36 @@ func main() {
 			PartitionKey: aws.String("key2"),
 		}
 	}
-	fmt.Printf("%v\n", entries)
-	putsOutput, err := kc.PutRecords(&kinesis.PutRecordsInput{
+
+	putRecordsInput := kinesis.PutRecordsInput{
 		Records:    entries,
 		StreamName: streamName,
-	})
+	}
+
+	log.Printf("records to put: %v\n", putRecordsInput)
+	putsOutput, err := kc.PutRecords(&putRecordsInput)
 	if err != nil {
 		panic(err)
 	}
 	// putsOutput has Records, and its shard id and sequece enumber.
-	fmt.Printf("%v\n", putsOutput)
+	log.Printf("putsOutput: %v\n", putsOutput)
 
-	// retrieve iterator
-	iteratorOutput, err := kc.GetShardIterator(&kinesis.GetShardIteratorInput{
+	iteratorInput := kinesis.GetShardIteratorInput{
 		// Shard Id is provided when making put record(s) request.
 		ShardId:           putOutput.ShardId,
 		ShardIteratorType: aws.String("TRIM_HORIZON"),
 		// ShardIteratorType: aws.String("AT_SEQUENCE_NUMBER"),
 		// ShardIteratorType: aws.String("LATEST"),
 		StreamName: streamName,
-	})
+	}
+	log.Println("iteratorInput %+v", iteratorInput)
+	// retrieve iterator
+	iteratorOutput, err := kc.GetShardIterator(&iteratorInput)
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("%v\n", iteratorOutput)
-
+	log.Printf("iteratorOutput: %v\n", iteratorOutput)
+	log.Printf("getting records by iterator %+v", iteratorOutput.ShardIterator)
 	// get records use shard iterator for making request
 	records, err := kc.GetRecords(&kinesis.GetRecordsInput{
 		ShardIterator: iteratorOutput.ShardIterator,
@@ -90,23 +103,25 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("%v\n", records)
+	log.Printf("records: %v\n", records)
 
 	// and, you can iteratively make GetRecords request using records.NextShardIterator
+	log.Printf("getting next records using records.NextShardIterator %+v", records.NextShardIterator)
 	recordsSecond, err := kc.GetRecords(&kinesis.GetRecordsInput{
 		ShardIterator: records.NextShardIterator,
 	})
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("%v\n", recordsSecond)
-
-	// OK, finally delete your stream
-	deleteOutput, err := kc.DeleteStream(&kinesis.DeleteStreamInput{
+	log.Printf("recordsSecond %v\n", recordsSecond)
+	deleteParams := kinesis.DeleteStreamInput{
 		StreamName: streamName,
-	})
+	}
+	log.Printf("deleting the stream %+v\n", deleteParams)
+	// OK, finally delete your stream
+	deleteOutput, err := kc.DeleteStream(&deleteParams)
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("%v\n", deleteOutput)
+	log.Printf("deleteOutput: %v\n", deleteOutput)
 }
